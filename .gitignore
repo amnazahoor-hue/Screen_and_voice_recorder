@@ -1,0 +1,7 @@
+client_secret.json
+flask_session/
+venv/
+__pycache__/
+*.pyc
+uploads/
+.env

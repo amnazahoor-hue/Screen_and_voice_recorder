@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Meeting Recorder Launcher</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <div class="brand">
+        <span class="brand-icon" aria-hidden="true">◉</span>
+        <h1>Meeting Recorder</h1>
+      </div>
+      <p class="tagline">Popup launcher</p>
+    </header>
+
+    <main class="main">
+      <section class="panel auth-panel">
+        <p class="status">
+          Recording cannot continue in a popup after it is closed.
+        </p>
+        <button type="button" class="btn btn-primary" id="btnOpenRecorder">
+          Open Recorder Window
+        </button>
+      </section>
+    </main>
+  </div>
+
+  <script src="js/popup.js" defer></script>
+</body>
+</html>

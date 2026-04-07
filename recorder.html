@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Meeting Recorder</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+  <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
   <div class="app">
@@ -18,16 +18,14 @@
 
     <main class="main">
       <section class="panel auth-panel" id="authSection">
-        {% if logged_in %}
-        <p class="status ok">Signed in with Google</p>
-        <a class="btn btn-secondary" href="{{ url_for('logout') }}">Sign out</a>
-        {% else %}
-        <p class="status">Connect your Google account to upload recordings to Drive.</p>
-        <a class="btn btn-primary" href="{{ url_for('login') }}">Login with Google</a>
-        {% endif %}
+        <p class="status" id="authStatus">Connect your Google account to upload recordings to Drive.</p>
+        <div class="actions">
+          <button type="button" class="btn btn-primary" id="btnLogin">Login with Google</button>
+          <button type="button" class="btn btn-secondary" id="btnLogout" hidden>Sign out</button>
+        </div>
       </section>
 
-      <section class="panel recorder-panel" id="recorderSection" {% if not logged_in %}hidden{% endif %}>
+      <section class="panel recorder-panel" id="recorderSection" hidden>
         <div class="timer-wrap">
           <span class="timer-label">Live timer</span>
           <time class="timer" id="liveTimer" datetime="PT0S">00:00:00</time>
@@ -35,13 +33,13 @@
 
         <p class="hint critical-reminder" role="note" id="shareAudioReminder">
           <strong>CRITICAL:</strong> When the screen-share popup appears, you <strong>must</strong> check the
-          <strong>Share system audio</strong> box in the bottom-left corner (wording may say “Share tab audio” when sharing a Chrome tab).
+          <strong>Share system audio</strong> box in the bottom-left corner (wording may say "Share tab audio" when sharing a Chrome tab).
         </p>
 
         <p class="hint hint-warn" id="recordingAudioWarning" hidden></p>
 
         <div class="actions">
-          <button type="button" class="btn btn-accent" id="btnStart" {% if not logged_in %}disabled{% endif %}>
+          <button type="button" class="btn btn-accent" id="btnStart" disabled>
             Start Recording
           </button>
           <button type="button" class="btn btn-danger" id="btnStop" disabled>
@@ -55,13 +53,10 @@
     </main>
 
     <footer class="footer">
-      <small>Uses Google Drive API with limited <code>drive.file</code> scope — only files created by this app.</small>
+      <small>Uses Google Drive API with limited <code>drive.file</code> scope - only files created by this extension.</small>
     </footer>
   </div>
 
-  <script>
-    window.__INITIAL_AUTH__ = {{ 'true' if logged_in else 'false' }};
-  </script>
-  <script src="{{ url_for('static', filename='js/recorder.js') }}" defer></script>
+  <script src="js/script.js" defer></script>
 </body>
 </html>

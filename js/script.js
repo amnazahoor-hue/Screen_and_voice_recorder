@@ -1,9 +1,10 @@
 (function () {
   "use strict";
 
-  const initialAuth = window.__INITIAL_AUTH__ === true;
-  const authSection = document.getElementById("authSection");
+  const authStatus = document.getElementById("authStatus");
   const recorderSection = document.getElementById("recorderSection");
+  const btnLogin = document.getElementById("btnLogin");
+  const btnLogout = document.getElementById("btnLogout");
   const btnStart = document.getElementById("btnStart");
   const btnStop = document.getElementById("btnStop");
   const liveTimer = document.getElementById("liveTimer");
@@ -19,6 +20,7 @@
   let micStream = null;
   let audioContext = null;
   let mixedStream = null;
+  let currentToken = null;
 
   function setError(msg) {
     if (!msg) {
@@ -43,6 +45,17 @@
 
   function setStatus(msg) {
     statusText.textContent = msg;
+  }
+
+  function setAuthenticatedUI(isAuthed) {
+    recorderSection.hidden = !isAuthed;
+    btnStart.disabled = !isAuthed;
+    btnLogin.hidden = isAuthed;
+    btnLogout.hidden = !isAuthed;
+    authStatus.classList.toggle("ok", isAuthed);
+    authStatus.textContent = isAuthed
+      ? "Signed in with Google."
+      : "Connect your Google account to upload recordings to Drive.";
   }
 
   function formatElapsed(ms) {
@@ -77,16 +90,59 @@
     stream.getTracks().forEach((t) => t.stop());
   }
 
-  async function refreshAuthUI() {
+  function getAuthToken(interactive) {
+    return new Promise((resolve, reject) => {
+      chrome.identity.getAuthToken({ interactive }, (token) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        if (!token) {
+          reject(new Error("No auth token returned."));
+          return;
+        }
+        resolve(token);
+      });
+    });
+  }
+
+  async function refreshAuthState() {
     try {
-      const r = await fetch("/api/status", { credentials: "same-origin" });
-      const data = await r.json();
-      const ok = data.authenticated === true;
-      if (recorderSection) recorderSection.hidden = !ok;
-      if (btnStart) btnStart.disabled = !ok;
-      return ok;
-    } catch {
-      return initialAuth;
+      const token = await getAuthToken(false);
+      currentToken = token;
+      setAuthenticatedUI(true);
+      return true;
+    } catch (_) {
+      currentToken = null;
+      setAuthenticatedUI(false);
+      return false;
+    }
+  }
+
+  async function loginInteractive() {
+    try {
+      setError("");
+      currentToken = await getAuthToken(true);
+      await chrome.storage.local.set({ hasDriveAuth: true });
+      setAuthenticatedUI(true);
+    } catch (err) {
+      setError(err.message || "Google login failed.");
+    }
+  }
+
+  async function logout() {
+    try {
+      const token = currentToken || (await getAuthToken(false).catch(() => null));
+      if (token) {
+        await new Promise((resolve) => {
+          chrome.identity.removeCachedAuthToken({ token }, () => resolve());
+        });
+      }
+      currentToken = null;
+      await chrome.storage.local.remove("hasDriveAuth");
+      setAuthenticatedUI(false);
+    } catch (err) {
+      setError(err.message || "Sign out failed.");
     }
   }
 
@@ -102,10 +158,6 @@
     return "";
   }
 
-  /**
-   * Captures screen + system audio (getDisplayMedia) and mic (getUserMedia) separately,
-   * mixes both audio sources in AudioContext, outputs one video + merged audio stream.
-   */
   async function buildMixedStream() {
     displayStream = await navigator.mediaDevices.getDisplayMedia({
       video: true,
@@ -125,8 +177,7 @@
     const videoTracks = displayStream.getVideoTracks();
     const displayAudioTracks = displayStream.getAudioTracks();
     const hasSystemAudio = displayAudioTracks.length > 0;
-    const hasMic =
-      micStream && micStream.getAudioTracks().length > 0;
+    const hasMic = micStream && micStream.getAudioTracks().length > 0;
 
     if (!hasSystemAudio && !hasMic) {
       mixedStream = new MediaStream(videoTracks.slice());
@@ -139,7 +190,6 @@
 
     audioContext = new AudioContext();
     await audioContext.resume();
-
     const dest = audioContext.createMediaStreamDestination();
 
     if (hasSystemAudio) {
@@ -155,11 +205,7 @@
 
     const mixedAudioTracks = dest.stream.getAudioTracks();
     mixedStream = new MediaStream([...videoTracks, ...mixedAudioTracks]);
-    return {
-      stream: mixedStream,
-      hasSystemAudio,
-      hasMic,
-    };
+    return { stream: mixedStream, hasSystemAudio, hasMic };
   }
 
   async function teardownStreams() {
@@ -173,36 +219,74 @@
     if (audioContext) {
       try {
         await audioContext.close();
-      } catch (_) {}
+      } catch (_) {
+        // ignore close errors
+      }
       audioContext = null;
     }
   }
 
-  async function uploadBlob(blob) {
-    const form = new FormData();
-    const name =
-      "Meeting_" + new Date().toISOString().replace(/[:.]/g, "-") + ".webm";
-    form.append("recording", blob, name);
+  async function driveUploadBlob(blob) {
+    let token = currentToken;
+    if (!token) token = await getAuthToken(false);
+    currentToken = token;
 
-    const res = await fetch("/upload", {
-      method: "POST",
-      body: form,
-      credentials: "same-origin",
+    const fileName = `Meeting_${new Date().toISOString().replace(/[:.]/g, "-")}.webm`;
+    const metadata = {
+      name: fileName,
+      mimeType: blob.type || "video/webm",
+    };
+
+    const initRes = await fetch(
+      "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,webViewLink",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json; charset=UTF-8",
+          "X-Upload-Content-Type": metadata.mimeType,
+        },
+        body: JSON.stringify(metadata),
+      }
+    );
+
+    if (!initRes.ok) {
+      throw new Error(`Drive upload init failed (${initRes.status}).`);
+    }
+
+    const uploadUrl = initRes.headers.get("Location");
+    if (!uploadUrl) {
+      throw new Error("Drive upload URL missing.");
+    }
+
+    const putRes = await fetch(uploadUrl, {
+      method: "PUT",
+      headers: {
+        "Content-Type": metadata.mimeType,
+      },
+      body: blob,
     });
 
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      throw new Error(data.error || res.statusText || "Upload failed");
+    if (!putRes.ok) {
+      throw new Error(`Drive upload failed (${putRes.status}).`);
     }
-    return data;
+
+    return putRes.json();
   }
+
+  btnLogin.addEventListener("click", loginInteractive);
+  btnLogout.addEventListener("click", logout);
 
   btnStart.addEventListener("click", async () => {
     setError("");
-    const authed = await refreshAuthUI();
-    if (!authed) {
-      setError("Please sign in with Google first.");
-      return;
+    setRecordingAudioWarning("");
+
+    if (!currentToken) {
+      const authed = await refreshAuthState();
+      if (!authed) {
+        setError("Please sign in with Google first.");
+        return;
+      }
     }
 
     if (!navigator.mediaDevices?.getDisplayMedia) {
@@ -211,8 +295,6 @@
     }
 
     try {
-      setRecordingAudioWarning("");
-
       const { stream, hasSystemAudio, hasMic } = await buildMixedStream();
 
       if (!hasSystemAudio) {
@@ -242,7 +324,7 @@
         btnStart.disabled = false;
         btnStop.disabled = true;
         setRecordingAudioWarning("");
-        setStatus("Uploading to Google Drive…");
+        setStatus("Uploading to Google Drive...");
 
         const type = mediaRecorder.mimeType || "video/webm";
         const blob = new Blob(recordedChunks, { type });
@@ -252,10 +334,8 @@
         recordedChunks = [];
 
         try {
-          const result = await uploadBlob(blob);
-          setStatus(
-            "Saved to Drive: " + (result.name || "recording") + "."
-          );
+          const result = await driveUploadBlob(blob);
+          setStatus(`Saved to Drive: ${result.name || "recording"}.`);
         } catch (err) {
           setError(err.message || "Upload failed.");
           setStatus("Recording stopped.");
@@ -275,9 +355,7 @@
       startTimer();
       btnStart.disabled = true;
       btnStop.disabled = false;
-      setStatus(
-        "Recording… Pick a Chrome tab and enable tab audio, or a screen/window with system audio if offered."
-      );
+      setStatus("Recording... ensure system/tab audio is enabled in the share dialog.");
     } catch (err) {
       await teardownStreams();
       setRecordingAudioWarning("");
@@ -292,12 +370,10 @@
 
   btnStop.addEventListener("click", () => {
     if (mediaRecorder && mediaRecorder.state === "recording") {
-      setStatus("Stopping…");
+      setStatus("Stopping...");
       mediaRecorder.stop();
     }
   });
 
-  if (!initialAuth) {
-    refreshAuthUI();
-  }
+  refreshAuthState();
 })();
